@@ -5766,6 +5766,7 @@ dependencies = [
  "anyhow",
  "axum",
  "axum-server",
+ "cc",
  "chrono",
  "csv",
  "ctor",
@@ -7242,3 +7243,7 @@ dependencies = [
  "syn",
  "winnow",
 ]
+
+[[patch.unused]]
+name = "edio11"
+version = "0.1.1"
