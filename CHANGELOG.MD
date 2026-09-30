@@ -1,3 +1,9 @@
+# 0.2.54 - 2026-09-30
+  - Fixed crashes and missing damage events on game 4.5.0+
+  - Fixed follow-up and combo skill detection on game 4.6.0
+  - Fixed an overlay render-thread/WndProc race that could corrupt the heap
+  - Preserved the performance and Wine compatibility improvements from the beta branch
+
 # 0.2.52 - 2026-06-23
   - Fixed for 4.2.54
 
