@@ -7243,7 +7243,3 @@ dependencies = [
  "syn",
  "winnow",
 ]
-
-[[patch.unused]]
-name = "edio11"
-version = "0.1.1"
