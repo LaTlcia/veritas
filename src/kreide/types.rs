@@ -42,7 +42,7 @@ pub enum RPG_GameCore_AliveState {
     Deathrattle,
     Dying,
     Died,
-    WillBeDestroyed,
+    WillBeDestroy,
     Destroyed,
 }
 

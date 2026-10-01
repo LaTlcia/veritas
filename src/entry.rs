@@ -13,6 +13,7 @@ use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::ProcessStatus::{GetModuleInformation, MODULEINFO};
 use windows::Win32::System::Threading::GetCurrentProcess;
+use windows::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW, MSG, TranslateMessage};
 use windows::core::w;
 
 #[ctor]
@@ -56,6 +57,18 @@ fn init() {
     match overlay::initialize(toasts) {
         Ok(_) => log::info!("Overlay initialized successfully"),
         Err(e) => log::error!("Overlay failed to initialize: {}", e),
+    }
+
+    // On Wine the overlay's dummy window is never destroyed (see overlay::get_vtable).
+    // Exiting this thread would destroy it, so keep pumping its messages instead.
+    if overlay::is_wine() {
+        unsafe {
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0).0 > 0 {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
     }
 }
 

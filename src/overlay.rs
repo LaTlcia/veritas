@@ -28,12 +28,13 @@ use windows::{
                 DXGI_SWAP_EFFECT_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIFactory, IDXGISwapChain,
             },
         },
+        System::LibraryLoader::{GetModuleHandleW, GetProcAddress},
         UI::WindowsAndMessaging::{
             CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow,
             RegisterClassExW, UnregisterClassW, WINDOW_EX_STYLE, WNDCLASSEXW, WS_OVERLAPPEDWINDOW,
         },
     },
-    core::{Interface, PCWSTR},
+    core::{Interface, PCWSTR, s, w},
 };
 use windows::
     Win32::
@@ -42,6 +43,15 @@ use windows::
 ;
 
 use crate::ui::app::App;
+
+// Wine exports wine_get_version from its ntdll
+pub fn is_wine() -> bool {
+    unsafe {
+        GetModuleHandleW(w!("ntdll.dll"))
+            .map(|ntdll| GetProcAddress(ntdll, s!("wine_get_version")).is_some())
+            .unwrap_or(false)
+    }
+}
 
 // rdbo Kiero
 // https://github.com/eugen15/directx-present-hook
@@ -213,6 +223,16 @@ pub fn get_vtable() -> Result<Box<[usize; 205]>> {
             vtable[18 + 43..].as_mut_ptr(),
             144,
         );
+
+        // On Wine (winemac), destroying the dummy window releases its client surface, which
+        // can deadlock against the game's message thread presenting its own surface and freeze
+        // the game. Keep the dummy objects alive; entry::init keeps the owning thread alive too.
+        if is_wine() {
+            mem::forget(swap_chain_ptr.clone());
+            mem::forget(device_ptr.clone());
+            mem::forget(context_ptr.clone());
+            return Ok(vtable);
+        }
 
         DestroyWindow(window)?;
         UnregisterClassW(window_class.lpszClassName, Some(window_class.hInstance))?;
