@@ -125,7 +125,12 @@ pub struct App {
     pub update: Option<Update>,
     pub updater_hint: Option<String>,
     pub updater_window_last_size: Option<egui::Vec2>,
+    pub last_autosave: std::time::Instant,
 }
+
+// edio11 only saves on WM_CLOSE, and under Wine closing the game window doesn't deliver one,
+// so settings and window layout are also saved on this interval.
+const AUTOSAVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 fn default_true() -> bool {
     true
@@ -370,6 +375,13 @@ impl Overlay for App {
         }
 
         self.notifs.show(ctx);
+
+        if self.last_autosave.elapsed() >= AUTOSAVE_INTERVAL {
+            self.last_autosave = std::time::Instant::now();
+            // Save from a copy of the memory so nothing runs while the context is locked
+            let mut memory = ctx.memory(|memory| memory.clone());
+            self.save(&mut memory);
+        }
     }
 
     fn window_process(
@@ -629,6 +641,7 @@ impl App {
             update: None,
             updater_hint: None,
             updater_window_last_size: None,
+            last_autosave: std::time::Instant::now(),
         };
 
         rust_i18n::set_locale(&app.config.locale);
