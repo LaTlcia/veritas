@@ -1022,15 +1022,18 @@ fn handle_hp_change(turn_based_ability_component: RPG_GameCore_TurnBasedAbilityC
     });
 }
 
+// a4 is the AntiLockHPStrength that 4.6.53 appended. It is pointer-sized so that on older games,
+// where that stack slot holds the MethodInfo pointer instead, the whole slot is passed through.
 #[named]
 pub fn on_direct_change_hp(
     instance: RPG_GameCore_TurnBasedAbilityComponent,
     a1: i32,
     a2: RPG_GameCore_FixPoint,
     a3: *const c_void,
+    a4: usize,
 ) {
     log::debug!(function_name!());
-    let res = ON_DIRECT_CHANGE_HP_Detour.call(instance, a1, a2, a3);
+    let res = ON_DIRECT_CHANGE_HP_Detour.call(instance, a1, a2, a3, a4);
     handle_hp_change(instance);
     res
 }
@@ -1365,7 +1368,7 @@ retour::static_detour! {
     static ON_TURN_END_Detour: fn(RPG_GameCore_TurnBasedAbilityComponent, i32);
     static ON_UPDATE_WAVE_Detour: fn(RPG_GameCore_TurnBasedGameMode);
     static ON_UPDATE_CYCLE_Detour: fn(RPG_GameCore_TurnBasedGameMode) -> u32;
-    static ON_DIRECT_CHANGE_HP_Detour: fn(RPG_GameCore_TurnBasedAbilityComponent, i32, RPG_GameCore_FixPoint, *const c_void);
+    static ON_DIRECT_CHANGE_HP_Detour: fn(RPG_GameCore_TurnBasedAbilityComponent, i32, RPG_GameCore_FixPoint, *const c_void, usize);
     static ON_DIRECT_DAMAGE_HP_Detour: fn(RPG_GameCore_TurnBasedAbilityComponent, RPG_GameCore_FixPoint, i32, *const c_void, RPG_GameCore_FixPoint, *const c_void, i32);
     static ON_STAT_CHANGE_Detour: fn(RPG_GameCore_TurnBasedAbilityComponent, RPG_GameCore_AbilityProperty, i32, RPG_GameCore_FixPoint, *const c_void) -> bool;
     static ON_ENTITY_DEFEATED_Detour: fn(RPG_GameCore_TurnBasedGameMode, *const c_void) -> bool;
@@ -1506,18 +1509,26 @@ pub fn subscribe() -> Result<()> {
                 .va(),
             on_update_cycle
         )?;
+        // 4.6.53 appended an AntiLockHPStrength parameter; older games have the 3-parameter overload.
+        let ability_component = RPG_GameCore_TurnBasedAbilityComponent::get_class_static()?;
+        let direct_change_hp = match ability_component.find_method(
+            "DirectChangeHP",
+            vec![
+                "RPG.GameCore.PropertyModifyFunction",
+                "RPG.GameCore.FixPoint",
+                "*",
+                "RPG.GameCore.AntiLockHPStrength",
+            ],
+        ) {
+            Ok(method) => method,
+            Err(_) => ability_component.find_method(
+                "DirectChangeHP",
+                vec!["RPG.GameCore.PropertyModifyFunction", "RPG.GameCore.FixPoint", "*"],
+            )?,
+        };
         subscribe_function!(
             ON_DIRECT_CHANGE_HP_Detour,
-            RPG_GameCore_TurnBasedAbilityComponent::get_class_static()?
-                .find_method(
-                    "DirectChangeHP",
-                    vec![
-                        "RPG.GameCore.PropertyModifyFunction",
-                        "RPG.GameCore.FixPoint",
-                        "*"
-                    ],
-                )?
-                .va(),
+            direct_change_hp.va(),
             on_direct_change_hp
         )?;
         subscribe_function!(
