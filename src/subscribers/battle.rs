@@ -263,6 +263,95 @@ unsafe fn get_attack_type_offset(class: Il2CppClass) -> Result<usize> {
         .ok_or_else(|| anyhow!("Failed to cache attack type offset"))
 }
 
+// Elation damage probe: dumps the Elation-related fields of the damage data object (NCJILFFNINI)
+// for every ByElationDamage hit. Offsets come from static analysis of the 4.6.53 client
+// (AbilityStatic::SetupDamageData* / DamageFormula); re-check them after a game update.
+const PROBE_DAMAGE_DATA_CLASS: &str = "NCJILFFNINI";
+const FORMULA_TYPE_BY_ELATION_DAMAGE: i32 = 9;
+const DD_TEAM_FUN_NUM: usize = 0x200; // team-wide punchline count (ElationPointManager)
+const DD_ELATION_PERCENTAGE: usize = 0x288; // ElationDamagePercentage x HitSplitRatio
+const DD_ECHO_POINT: usize = 0x2A0; // attacker's AbilityProperty 150 ElationEchoPoint
+const DD_FUN_MULTIPLIER: usize = 0x2C0; // FunNumMultiplier[P]
+const DD_FUN_NUM_DELTA: usize = 0x328; // AttackData_ElationPointNumDelta
+const DD_FUN_NUM: usize = 0x368; // punchline count P actually used
+const DD_BASE_DAMAGE: usize = 0x458; // base damage before DEF/RES/crit
+const DD_USE_TEAM_FUN_NUM: usize = 0x471; // 1 = team punchlines, 0 = ElationEchoPoint
+const DD_FORMULA_TYPE: usize = 0x4A0; // AttackFormulaType
+const DD_ELATION_ADDED_RATIO: usize = 0x4B0; // AbilityProperty 146 ElationDamageAddedRatio
+const DD_ATTACKER_LEVEL: usize = 0x680;
+const DD_ELATION_EXTRA_ADDED_RATIO: usize = 0x6A0; // AbilityProperty 149 ElationDamageExtraAddedRatio
+const DD_ELATION_LEVEL_BASE: usize = 0x6F0; // ElationBasicLevelDamage[level]
+
+unsafe fn read_fixpoint(obj: *const c_void, offset: usize) -> Result<f64> {
+    let raw = unsafe { *(obj.byte_offset(offset as isize) as *const i64) };
+    Ok(RPG_GameCore_FixPoint { m_rawValue: raw }.to_double()?)
+}
+
+fn il2cpp_string_or_dash(value: Il2CppString) -> String {
+    if value.0.is_null() {
+        "-".to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+#[named]
+unsafe fn probe_elation_damage(
+    damage_data: *const c_void,
+    ability_id: Il2CppString,
+    custom_name: Il2CppString,
+    avatar: &Avatar,
+    damage: f64,
+) -> Result<()> {
+    let Some(class) = (unsafe { object_class(damage_data) }) else {
+        return Ok(());
+    };
+    let class_name = class.qualified_name();
+    if class_name != PROBE_DAMAGE_DATA_CLASS {
+        static WARNED: OnceLock<()> = OnceLock::new();
+        if WARNED.set(()).is_ok() {
+            log::warn!(
+                "{}: damage data class is {}, expected {}; probe disabled",
+                function_name!(),
+                class_name,
+                PROBE_DAMAGE_DATA_CLASS
+            );
+        }
+        return Ok(());
+    }
+
+    let formula_type =
+        unsafe { *(damage_data.byte_offset(DD_FORMULA_TYPE as isize) as *const i32) };
+    if formula_type != FORMULA_TYPE_BY_ELATION_DAMAGE {
+        return Ok(());
+    }
+    let use_team_fun_num =
+        unsafe { *(damage_data.byte_offset(DD_USE_TEAM_FUN_NUM as isize) as *const u8) } != 0;
+
+    unsafe {
+        log::info!(
+            "[elation-probe] attacker={}({}) ability={} custom={} ratio={:.4} P={:.0} delta={:.0} source={} team_fun={:.0} echo={:.0} M={:.4} level={:.0} level_base={:.2} elation={:.4} extra={:.4} base={:.2} final={:.2}",
+            avatar.name,
+            avatar.id,
+            il2cpp_string_or_dash(ability_id),
+            il2cpp_string_or_dash(custom_name),
+            read_fixpoint(damage_data, DD_ELATION_PERCENTAGE)?,
+            read_fixpoint(damage_data, DD_FUN_NUM)?,
+            read_fixpoint(damage_data, DD_FUN_NUM_DELTA)?,
+            if use_team_fun_num { "team" } else { "echo" },
+            read_fixpoint(damage_data, DD_TEAM_FUN_NUM)?,
+            read_fixpoint(damage_data, DD_ECHO_POINT)?,
+            read_fixpoint(damage_data, DD_FUN_MULTIPLIER)?,
+            read_fixpoint(damage_data, DD_ATTACKER_LEVEL)?,
+            read_fixpoint(damage_data, DD_ELATION_LEVEL_BASE)?,
+            read_fixpoint(damage_data, DD_ELATION_ADDED_RATIO)?,
+            read_fixpoint(damage_data, DD_ELATION_EXTRA_ADDED_RATIO)?,
+            read_fixpoint(damage_data, DD_BASE_DAMAGE)?,
+            damage,
+        );
+    }
+    Ok(())
+}
 
 #[named]
 fn on_damage(
@@ -377,15 +466,28 @@ fn on_damage(
                 match attack_owner_entity_value {
                     RPG_GameCore_EntityType::Avatar => {
                         let e = match helpers::get_avatar_from_entity(attack_owner) {
-                            Ok(avatar) => Ok(Event::OnDamage(OnDamageEvent {
-                                attacker: Entity {
-                                    uid: avatar.id,
-                                    team: Team::Player,
-                                },
-                                damage,
-                                overkill_damage,
-                                r#type,
-                            })),
+                            Ok(avatar) => {
+                                if let Err(err) = unsafe {
+                                    probe_elation_damage(
+                                        damage_data,
+                                        ability_id,
+                                        custom_name,
+                                        &avatar,
+                                        damage,
+                                    )
+                                } {
+                                    log::warn!("Elation probe error: {}", err);
+                                }
+                                Ok(Event::OnDamage(OnDamageEvent {
+                                    attacker: Entity {
+                                        uid: avatar.id,
+                                        team: Team::Player,
+                                    },
+                                    damage,
+                                    overkill_damage,
+                                    r#type,
+                                }))
+                            }
                             Err(e) => {
                                 log::error!("Avatar Event Error: {}", e);
                                 Err(anyhow!("{} Avatar Event Error: {}", function_name!(), e))
